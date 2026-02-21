@@ -167,11 +167,11 @@ We developed \texttt{xrt-classic-miner}, a Python CLI tool implementing the comp
 
 \begin{verbatim}
 xrt_miner/
-├── abi.py      — Minimal contract ABIs, mainnet addresses
-├── signer.py   — EIP-191 demand/offer/result message construction
-├── miner.py    — XRTMiner class: lighthouse management, mining loops
-└── __main__.py — CLI interface (click): setup, mine, batch, pipeline,
-                  status, swap
+|-- abi.py      -- Minimal contract ABIs, mainnet addresses
+|-- signer.py   -- EIP-191 demand/offer/result message construction
+|-- miner.py    -- XRTMiner class: lighthouse management, mining loops
++-- __main__.py -- CLI interface (click): setup, mine, batch, pipeline,
+                   status, swap
 \end{verbatim}
 
 \textbf{Signature construction} follows the Robonomics v1.0 format. Demand and offer messages are 268 bytes each, encoded with \texttt{abi.encodePacked} and signed via EIP-191. A critical implementation detail: demand messages place \texttt{lighthouse} before \texttt{validator} in the field order, while offer messages invert this---a deliberate asymmetry that prevents replay attacks across roles.
