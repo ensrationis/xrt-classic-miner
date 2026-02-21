@@ -1,0 +1,10 @@
+rpc_url: "https://mainnet.infura.io/v3/YOUR_KEY"
+private_key: "0x..."  # or path to keyfile
+lighthouse: "0x..."   # existing lighthouse address (optional)
+factory: "0x7e384AD1FE06747594a6102EE5b377b273DC1225"
+xrt: "0x7de91b204c1c737bcee6f000aaa6569cf7061cb7"
+mine:
+  count: 0           # 0 = infinite
+  model: ""          # 34 bytes hex, default = random
+  objective: ""      # 34 bytes hex, default = random
+  gas_price_gwei: "auto"

@@ -1,0 +1,656 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{url}
+\usepackage{xcolor}
+
+\bibliographystyle{plainnat}
+
+\title{Empirical Study of Gas-Proportional Token Emission:\\
+Revisiting the Robonomics XRT Mechanism\\
+Eight Years After Deployment}
+
+\author{
+  Sergey Lonshakov\textsuperscript{1} \and
+  Alexander Krupenkin\textsuperscript{1} \\[6pt]
+  \textsuperscript{1}Robonomics Network \\
+  \texttt{research@robonomics.network}
+}
+
+\date{February 12, 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present an empirical study of the XRT token emission mechanism deployed as part of Robonomics Network v5 on Ethereum mainnet. Originally designed in 2018 when Ethereum gas prices ranged from 20 to 200~gwei, the mechanism ties token emission to a Smoothed Moving Average (SMMA) of observed transaction gas prices---an innovative approach that creates a self-regulating economic feedback loop between network utilization cost and token supply. With Ethereum gas prices having decreased by two orders of magnitude to ${\sim}0.25$~gwei by 2026, we conducted a controlled experiment to study the emission mechanism's behavior under these dramatically altered conditions. We developed an automated pipeline tool, mined 24,190 XRT tokens through 1,360 liability contracts, and tested a two-phase ``Pump \& Mine'' strategy to manipulate the SMMA parameter. Our findings illuminate the elegant design principles behind gas-proportional emission, demonstrate the SMMA's properties as an endogenous price oracle, and provide empirical data on the reflexive dynamics between emission rate, token supply, and market microstructure on Uniswap~V2. This work contributes to the broader understanding of mechanism design in early Ethereum-era smart contract systems and the long-term behavior of on-chain economic primitives.
+\end{abstract}
+
+\noindent\textbf{Keywords:} token emission, mechanism design, Robonomics, XRT, SMMA, smart contracts, Ethereum, cyber-physical systems, DeFi
+
+\section{Introduction}
+
+Ethereum, since its conception by Buterin in 2013, has been described as a ``world computer''---a Turing-complete, decentralized execution environment where smart contracts serve as programs running on shared global infrastructure. Unlike traditional computing platforms where applications can purchase dedicated resources (servers, bandwidth, CPU time), all programs on the Ethereum Virtual Machine (EVM) compete for the same finite resource: block gas. This raises a fundamental and surprisingly underexplored question: \textbf{how can a specific program---a group of interrelated smart contracts---ensure competitive advantage in the shared throughput of the network?}
+
+In traditional computing, the answer is straightforward: applications acquire dedicated capacity. On a shared blockchain, no such option exists natively. Every program pays the same market gas price, and no contract system can guarantee priority access to block space. The Robonomics Network, conceived by Lonshakov, Krupenkin et al.~\citep{lonshakov2018robonomics}, proposed what may be the only systematic attempt to answer this question on Ethereum~L1: \textbf{a native token (XRT) whose emission is directly proportional to the gas consumed by the protocol's smart contracts}. This creates an economic feedback loop where the cost of operating the Robonomics program on the world computer is internalized into the token supply itself---providers who spend gas to run the protocol receive newly minted XRT in proportion to their contribution. The emission formula embodies the whitepaper's principle: \emph{``Emission of 1~Wn = 1~gas utilized by Robonomics''}~\citep{lonshakov2018robonomics}.
+
+Drawing on Wiener's cybernetics~\citep{wiener1948cybernetics}, Coase's theory of the firm~\citep{coase1937nature}, and the Robot Operating System (ROS)~\citep{quigley2009ros}, Robonomics proposed a decentralized marketplace where autonomous robots and sensors participate in economic transactions through smart contract liabilities. The emission mechanism---an SMMA (Smoothed Moving Average) of observed gas prices modulating token issuance---represents a pioneering attempt at on-chain incentive alignment between protocol usage and token supply.
+
+In this paper, we revisit this mechanism eight years after deployment, under conditions radically different from those assumed at design time. We approach this study not as a critique but as an empirical investigation of a pioneering mechanism design, seeking to understand how carefully constructed economic invariants behave when a key environmental parameter---the price of gas on Ethereum---has changed by approximately $100\times$.
+
+\subsection{Contributions}
+
+\begin{enumerate}
+  \item \textbf{Empirical characterization} of the SMMA-based emission mechanism under ultra-low gas conditions (0.2--10~gwei), with data from 1,360 on-chain liability contracts;
+  \item \textbf{Experimental validation} of a two-phase SMMA manipulation strategy (``Pump \& Mine''), demonstrating the reflexive properties of the endogenous gas price oracle;
+  \item \textbf{Quantitative analysis} of market microstructure effects when mining-derived tokens are sold on thin Uniswap~V2 liquidity;
+  \item \textbf{Open-source tooling} for automated Robonomics liability lifecycle management (\texttt{xrt-classic-miner})\footnote{\url{https://github.com/ensrationis/xrt-classic-miner}};
+  \item \textbf{Design analysis} of early Ethereum-era mechanism engineering, contributing to the historical record of smart contract architecture.
+\end{enumerate}
+
+\subsection{Related Work}
+
+Token emission mechanisms in blockchain systems span a wide design space. Bitcoin's emission follows a deterministic halving schedule, reducing the block reward by 50\% every 210,000 blocks regardless of network conditions~\citep{nakamoto2008bitcoin}. Ethereum's post-Merge issuance ties validator rewards to staked ETH, creating a dynamic supply model where issuance depends on participation rates~\citep{ethereum2022merge}. Filecoin uses a ``baseline minting'' model where emission accelerates as network storage capacity grows~\citep{protocollabs2017filecoin}.
+
+The Robonomics approach is distinct in that emission is tied neither to time (Bitcoin), nor to consensus participation (Ethereum~PoS), nor to resource provisioning (Filecoin), but to \textbf{the computational cost of protocol operations as measured by EVM gas}. This creates a direct feedback loop between emission and utilization that is unique in the literature.
+
+The SMMA mechanism relates to the broader study of on-chain price oracles. Uniswap~V2's time-weighted average price (TWAP) oracle~\citep{adams2020uniswapv2} shares the principle of smoothing over time to resist manipulation, though it operates on a different signal (asset prices vs.\ gas prices). The Robonomics SMMA predates the widespread adoption of TWAP oracles and represents an early example of endogenous oracle design in production smart contracts.
+
+\section{Background: The Robonomics Economic Architecture}
+
+\subsection{The Vision: An Economy of Machines}
+
+Robonomics proposes that autonomous cyber-physical systems can participate in economic transactions as independent agents. In the whitepaper's formulation, a CPS is analogous to a firm in Coasean economics---a ``closely connected network of sensors and actuators capable of organized collaboration''~\citep{lonshakov2018robonomics}. The key insight is that the liability contract---a binding agreement encoded in a smart contract---serves as the primitive for machine-to-machine and human-to-machine economic interaction.
+
+The platform distinguishes between:
+\begin{itemize}
+  \item \textbf{Promisees} (demand side): agents requesting a service;
+  \item \textbf{Promisors} (supply side): CPS agents offering to execute behavioral models;
+  \item \textbf{Providers}: infrastructure operators who relay transactions to the Ethereum blockchain.
+\end{itemize}
+
+\subsection{The Contracts Factory}
+
+The Factory contract (\texttt{0x7e384...1225}) serves as the central registry, creating lightweight liability contracts via \texttt{DELEGATECALL}---a design pattern that saved 30--40\% gas compared to full contract deployment~\citep{lonshakov2018robonomics}. The Factory:
+\begin{itemize}
+  \item Verifies deferred signatures from both demand and supply sides;
+  \item Deploys a new liability contract for each matched pair;
+  \item Tracks cumulative gas consumption via \texttt{totalGasConsumed};
+  \item Manages the emission parameter \texttt{gasPrice} (the SMMA).
+\end{itemize}
+
+\subsection{The Lighthouse System}
+
+Lighthouses are autonomous coordination contracts that manage provider access through a round-robin quota mechanism. Each lighthouse maintains:
+\begin{itemize}
+  \item A \textbf{provider registry} with XRT stakes;
+  \item A \textbf{marker} pointing to the currently active provider;
+  \item \textbf{Quota} and \textbf{timeout} parameters for fair turn distribution.
+\end{itemize}
+
+The lighthouse design reflects a deep understanding of the coordination problem: in a decentralized system, transaction submission rights must be allocated without a central scheduler. The staking + timeout mechanism achieves this elegantly---providers stake XRT to participate, take turns submitting transactions, and if the active provider fails to act within the timeout window, the next provider can claim the marker.
+
+The architecture bears a notable resemblance to the 0x Protocol~\citep{warren20170x}, which was being developed in the same period (2017--2018). Both systems share a fundamentally similar pattern: off-chain message matching with on-chain settlement. In 0x, makers and takers exchange signed ask/bid orders off-chain, with final settlement executed on Ethereum by ``relayers.'' In Robonomics, promisees and promisors exchange signed demand/offer messages off-chain, with providers (lighthouse operators) submitting the matched pair to Ethereum for on-chain liability creation.
+
+In this sense, the lighthouse system can be understood as one of the earliest attempts to build what would later be called a Layer~2 solution---not in the rollup sense of the term, but as a complementary off-chain communication layer that extends Ethereum with capabilities the base chain cannot efficiently provide, while settling only the economically meaningful outcomes on~L1.
+
+\subsection{The Emission Formula}
+
+The XRT emission mechanism, implemented in \texttt{Factory.wnFromGas()}, converts gas consumption into token issuance:
+\begin{equation}
+  \mathrm{wn} = \mathrm{gas} \times \mathrm{gasPrice}_{\mathrm{SMMA}} \times \frac{10^{9}}{\mathrm{finalPrice}_{\mathrm{auction}}}
+  \label{eq:emission}
+\end{equation}
+where:
+\begin{itemize}
+  \item $\mathrm{wn}$ is the emission in Wiener units ($1\;\mathrm{XRT} = 10^{9}\;\mathrm{wn}$);
+  \item $\mathrm{gasPrice}_{\mathrm{SMMA}}$ is the Smoothed Moving Average of observed gas prices;
+  \item $\mathrm{finalPrice}_{\mathrm{auction}}$ is the price established by the Dutch auction at TGE.
+\end{itemize}
+
+The SMMA updates with each \texttt{createLiability} and \texttt{finalizeLiability} call:
+\begin{equation}
+  \mathrm{gasPrice}_{n+1} = \frac{\mathrm{gasPrice}_{n} \times 999 + \mathrm{tx.gasprice}}{1000}
+  \label{eq:smma}
+\end{equation}
+
+This formula has a half-life of approximately 693 observations ($\ln(2) \times 1000$) and converges exponentially toward the prevailing \texttt{tx.gasprice}.
+
+\subsection{The Epoch System}
+
+The development period is divided into five epochs, each consuming a target of $3.47 \times 10^{12}$ gas. The emission multiplier decreases geometrically:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccc}
+\toprule
+Epoch & Emission per gas & Multiplier \\
+\midrule
+0 & $E(0) \times 1.000$ & $(2/3)^{0}$ \\
+1 & $E(0) \times 0.667$ & $(2/3)^{1}$ \\
+2 & $E(0) \times 0.444$ & $(2/3)^{2}$ \\
+3 & $E(0) \times 0.296$ & $(2/3)^{3}$ \\
+4 & $E(0) \times 0.198$ & $(2/3)^{4}$ \\
+\bottomrule
+\end{tabular}
+\caption{Epoch emission schedule with geometrically decreasing multipliers.}
+\label{tab:epochs}
+\end{table}
+
+At the time of our experiment, the system was at 0.17\% of epoch~0, with approximately 163,800 mining rounds remaining before the first multiplier reduction.
+
+\subsection{Design Rationale}
+
+The whitepaper articulates the core principle: \emph{``The cost of 1~Wn must cover the costs of the provider for the disposal of 1~unit of gas in Ethereum''}~\citep{lonshakov2018robonomics}. The gas-proportional emission creates a self-regulating system:
+\begin{itemize}
+  \item When gas is expensive $\rightarrow$ providers spend more ETH per liability $\rightarrow$ emission compensates proportionally;
+  \item When gas is cheap $\rightarrow$ providers spend less ETH $\rightarrow$ emission decreases proportionally;
+  \item The SMMA smooths short-term volatility, preventing flash-manipulation.
+\end{itemize}
+
+This design was calibrated for the 2018 gas landscape, where 2~gwei was identified as ``the minimum competitive price in the Ethereum network''~\citep{lonshakov2018robonomics}.
+
+\section{Experimental Methodology}
+
+\subsection{Tool Architecture}
+
+We developed \texttt{xrt-classic-miner}, a Python CLI tool implementing the complete Robonomics liability lifecycle:
+
+\begin{verbatim}
+xrt_miner/
+├── abi.py      — Minimal contract ABIs, mainnet addresses
+├── signer.py   — EIP-191 demand/offer/result message construction
+├── miner.py    — XRTMiner class: lighthouse management, mining loops
+└── __main__.py — CLI interface (click): setup, mine, batch, pipeline,
+                  status, swap
+\end{verbatim}
+
+\textbf{Signature construction} follows the Robonomics v1.0 format. Demand and offer messages are 268 bytes each, encoded with \texttt{abi.encodePacked} and signed via EIP-191. A critical implementation detail: demand messages place \texttt{lighthouse} before \texttt{validator} in the field order, while offer messages invert this---a deliberate asymmetry that prevents replay attacks across roles.
+
+\textbf{Pipeline mode} achieves maximum throughput by overlapping finalization of round~$N$ with creation of round~$N+1$:
+
+\begin{verbatim}
+Round 1: --- CREATE(batch) ----------->  [bootstrap]
+Round 2: FINALIZE(batch) + CREATE(batch) -> [pipeline]
+Round 3: FINALIZE(batch) + CREATE(batch) -> [pipeline]
+...
+\end{verbatim}
+
+Transactions are pre-signed with sequential nonces and broadcast rapidly, allowing multiple operations to be included in the same block.
+
+\subsection{Experimental Setup}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Network & Ethereum Mainnet \\
+Account & \texttt{0x6EFBA8...C3Ad} \\
+Lighthouse & \texttt{0x04C672...bbeE} (custom, timeout=1 block) \\
+RPC Provider & DRPC (free tier) \\
+Starting ETH & 3.544 \\
+XRT Staked & 112 wn \\
+Ethereum base fee & 0.19--0.29 gwei \\
+ETH/USD & ${\sim}\$1{,}944$ (Chainlink oracle) \\
+\bottomrule
+\end{tabular}
+\caption{Experimental parameters.}
+\label{tab:setup}
+\end{table}
+
+\subsection{EIP-1559 and tx.gasprice Semantics}
+
+A critical subtlety of the experiment concerns the interaction between the post-EIP-1559 fee model and the Robonomics SMMA mechanism, which was designed for the pre-EIP-1559 gas price model.
+
+In the original (pre-2021) Ethereum fee model, \texttt{tx.gasprice} was a single value set by the transaction sender. The Robonomics Factory reads \texttt{tx.gasprice} in the EVM to update the SMMA. After EIP-1559~\citep{buterin2019eip1559}, the fee structure changed to $\mathrm{baseFee} + \mathrm{priorityFee}$, where \texttt{baseFee} is burned and \texttt{priorityFee} goes to validators. However, the EVM opcode \texttt{GASPRICE} (used by Solidity's \texttt{tx.gasprice}) returns the \textbf{effective gas price}, which equals $\mathrm{baseFee} + \mathrm{priorityFee}$ for EIP-1559 transactions.
+
+This means the Robonomics SMMA continues to receive a meaningful gas price signal, but the semantics have shifted: the base fee component is now determined by network demand rather than sender choice. In our experiment, with base fees of 0.19--0.29~gwei, the priority fee dominated the effective gas price during both phases:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Phase & Base fee & Priority fee & Effective tx.gasprice & Priority fraction \\
+\midrule
+Pump & ${\sim}0.2$ gwei & 10 gwei & ${\sim}10.2$ gwei & 98\% \\
+Mine & ${\sim}0.2$ gwei & 1 gwei & ${\sim}1.2$ gwei & 83\% \\
+\bottomrule
+\end{tabular}
+\caption{Gas price decomposition by experimental phase.}
+\label{tab:gasprice}
+\end{table}
+
+This means the miner has almost complete control over the gas price signal that the SMMA observes---a situation that differs fundamentally from the 2018 design era, where \texttt{tx.gasprice} needed to be competitive with other users' bids to achieve timely inclusion.
+
+\subsection{Experimental Protocol}
+
+\textbf{Phase~1---Pump (SMMA Inflation):}
+\begin{itemize}
+  \item Priority fee: 10~gwei $\rightarrow$ effective tx.gasprice $\approx 10.2$~gwei
+  \item Batch size: 56 liabilities per round
+  \item Budget: 2.0~ETH
+  \item Objective: rapidly increase SMMA from ${\sim}1.03$ to maximum achievable level
+\end{itemize}
+
+\textbf{Phase~2---Mine (Elevated Emission Harvesting):}
+\begin{itemize}
+  \item Priority fee: 1~gwei $\rightarrow$ effective tx.gasprice $\approx 1.2$~gwei
+  \item Batch size: 10 (reduced from 56 due to RPC reliability constraints)
+  \item Budget: 1.0~ETH
+  \item Max cost: \$0.50 per liability
+  \item Auto-sell: every 2,000~XRT via Uniswap~V2 (5\% slippage tolerance)
+\end{itemize}
+
+\subsection{Parameter Tuning and Iteration}
+
+The final experimental parameters emerged from an iterative process of trial and adjustment, revealing practical constraints that theoretical analysis alone would not have predicted:
+
+\textbf{Batch size selection.} We initially targeted batch=56 (the maximum that would fit within lighthouse quota constraints). This worked for the pump phase, where high gas prices ensured rapid block inclusion. However, during the mine phase at lower priority fees, batch=56 caused cascading RPC timeouts---the free-tier DRPC provider could not reliably broadcast and track 112 pending transactions (56~create + 56~finalize) simultaneously. We progressively reduced batch sizes: 56 $\rightarrow$ 20 $\rightarrow$ 10, with batch=10 proving stable across 69 rounds with zero errors.
+
+\textbf{Priority fee optimization.} We explored multiple priority fee levels:
+\begin{itemize}
+  \item 10~gwei (pump): maximum SMMA growth, but extremely expensive per round (${\sim}0.57$~ETH/round)
+  \item 2~gwei (attempted): RPC timeouts at round~1
+  \item 1~gwei (final mine configuration): stable operation, acceptable cost (${\sim}0.012$~ETH/round)
+  \item 0.2~gwei (theoretical analysis only): would extend profitability by ${\sim}73$ additional rounds
+\end{itemize}
+
+\textbf{Auto-sell threshold.} The 2,000~XRT sell threshold was chosen to balance two constraints: (a)~accumulating enough XRT per sell to amortize the Uniswap swap gas cost (${\sim}112$k gas), and (b)~limiting per-swap market impact on the thin liquidity pool.
+
+\textbf{Lighthouse timeout.} We created a dedicated lighthouse with \texttt{timeoutInBlocks=1}---the minimum possible value. This meant we could immediately reclaim the provider marker after any interruption, eliminating waiting periods between rounds.
+
+\section{Results}
+
+\subsection{Phase~1: SMMA Pump}
+
+The pump phase completed 4 rounds of 56 liabilities each (448 contract calls), consuming 2.27~ETH in gas:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Metric & Value \\
+\midrule
+SMMA before & 1.03 gwei \\
+SMMA after & ${\sim}4.0$ gwei \\
+SMMA amplification & $\times 3.88$ \\
+Rounds completed & 4 \\
+Contract calls & 448 \\
+Gas consumed & ${\sim}2.27$ ETH \\
+XRT minted (pump) & ${\sim}15{,}519$ XRT \\
+XRT sold post-pump & ${\sim}16{,}899$ XRT $\rightarrow$ 0.763 ETH \\
+\bottomrule
+\end{tabular}
+\caption{Phase~1 (Pump) results.}
+\label{tab:pump}
+\end{table}
+
+The SMMA responded as predicted by the convergence formula. Each call moved SMMA by $(10.2 - \mathrm{SMMA}) / 1000$. The exponential approach to the target value of 10.2~gwei is visible in Figure~\ref{fig:smma}.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/fig1_smma_dynamics.png}
+\caption{SMMA trajectory during the pump and mine phases.}
+\label{fig:smma}
+\end{figure}
+
+\subsection{Phase~2: Mine}
+
+After transitioning to 1~gwei priority fee, the mine phase ran 69 rounds with zero errors:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Metric & Value \\
+\midrule
+Rounds completed & 69 \\
+Liabilities created & ${\sim}1{,}360$ \\
+Total XRT minted & 24,190 XRT \\
+Average XRT per round & 355.73 \\
+XRT in first round & 443.66 \\
+XRT in last round & 257.13 \\
+Emission decline & $-42.0\%$ \\
+Total gas consumed & ${\sim}729$~M gas \\
+XRT sold & 26,296 XRT \\
+ETH from sales & 0.841 ETH \\
+Errors & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Phase~2 (Mine) results.}
+\label{tab:mine}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/fig2_xrt_per_round.png}
+\caption{XRT emission per round during the mine phase.}
+\label{fig:xrt_per_round}
+\end{figure}
+
+\subsection{SMMA Decay Dynamics}
+
+The SMMA decayed from ${\sim}1.94$~gwei (at mine start, after transition period losses) toward the effective gas price of ${\sim}1.2$~gwei. With 20 calls per round, the SMMA decreased approximately 2\% per round:
+\begin{equation}
+  \mathrm{SMMA}_{n+1} = \mathrm{SMMA}_{n} \times \left(\frac{999}{1000}\right)^{20} + 1.2 \times \left(1 - \left(\frac{999}{1000}\right)^{20}\right)
+  \label{eq:decay}
+\end{equation}
+
+The empirical half-life was approximately 35 rounds, consistent with the theoretical prediction of $693/20 \approx 35$ rounds for a period-1000 SMMA with 20 updates per round.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/fig4_smma_convergence.png}
+\caption{SMMA convergence scenarios: empirical data vs.\ theoretical predictions.}
+\label{fig:convergence}
+\end{figure}
+
+\subsection{Market Impact on Uniswap~V2}
+
+Eleven automated sell events over ${\sim}75$~minutes revealed consistent price degradation:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccccc}
+\toprule
+Sell \# & XRT Sold & ETH Received & Price ($\mu$ETH/XRT) & $\Delta$ Price \\
+\midrule
+1 & 4,801 & 0.1616 & 33.65 & --- \\
+2 & 2,094 & 0.0691 & 33.01 & $-1.9\%$ \\
+3 & 2,019 & 0.0659 & 32.63 & $-1.2\%$ \\
+4 & 2,331 & 0.0758 & 32.52 & $-0.3\%$ \\
+5 & 2,248 & 0.0723 & 32.18 & $-1.0\%$ \\
+6 & 2,177 & 0.0692 & 31.78 & $-1.2\%$ \\
+7 & 2,116 & 0.0665 & 31.40 & $-1.2\%$ \\
+8 & 2,064 & 0.0642 & 31.11 & $-0.9\%$ \\
+9 & 2,256 & 0.0694 & 30.76 & $-1.1\%$ \\
+10 & 2,146 & 0.0652 & 30.39 & $-1.2\%$ \\
+11 & 2,044 & 0.0615 & 30.07 & $-1.1\%$ \\
+\midrule
+\textbf{Total} & \textbf{26,296} & \textbf{0.8406} & \textbf{31.97} (avg) & $\mathbf{-10.6\%}$ \\
+\bottomrule
+\end{tabular}
+\caption{Uniswap~V2 sell events and price impact.}
+\label{tab:sells}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/fig3_price_decay.png}
+\caption{XRT price decay across sequential sell events on Uniswap~V2.}
+\label{fig:price_decay}
+\end{figure}
+
+The approximately linear price decay (${\sim}1\%$ per sell event) is consistent with the constant-product AMM model of Uniswap~V2, where each trade shifts the reserve ratio. The thin liquidity pool amplified the impact.
+
+\subsection{Financial Summary}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Item & ETH & USD \\
+\midrule
+Starting balance & 3.544 & \$6,892 \\
+Gas spent (pump) & $-2.270$ & $-\$4{,}413$ \\
+Gas spent (mine) & $-0.840$ & $-\$1{,}634$ \\
+XRT sold (total) & $+0.841$ & $+\$1{,}635$ \\
+XRT sold (pump batch) & $+0.763$ & $+\$1{,}483$ \\
+Remaining XRT (675 XRT) & $+0.020$ & $+\$39$ \\
+\midrule
+\textbf{Final balance} & \textbf{3.182} & \textbf{\$6,186} \\
+\textbf{Net result} & $\mathbf{-0.342}$ & $\mathbf{-\$665}$ \\
+\bottomrule
+\end{tabular}
+\caption{Financial summary of the experiment.}
+\label{tab:financial}
+\end{table}
+
+\section{Analysis and Discussion}
+
+\subsection{The SMMA as an Endogenous Price Oracle}
+
+The central insight from this experiment is that the \texttt{gasPrice} SMMA in the Factory contract functions as an \textbf{endogenous price oracle}---a mechanism that derives its signal entirely from the behavior of system participants rather than from an external data feed. This design choice reflects a principled decision by the Robonomics architects: rather than introducing oracle risk, the emission mechanism directly observes the cost that providers actually pay to operate the system.
+
+The elegance of this approach is that it creates a \textbf{truthful mechanism} under the original design assumptions. When gas costs are a meaningful expense for providers (as they were at 20--200~gwei in 2018), \texttt{tx.gasprice} is a credible signal of the marginal cost of network operation. The emission formula then ensures that providers are compensated proportionally to their actual costs.
+
+Our experiment demonstrates that this mechanism continues to function correctly in a mathematical sense---the SMMA converges as predicted, emission responds proportionally---even under conditions vastly different from the design era.
+
+\subsection{The Reflexive Feedback Loop}
+
+The Robonomics emission mechanism exhibits a fascinating reflexive property that we illustrate in Figure~\ref{fig:feedback}.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/fig6_feedback_loop.png}
+\caption{Reflexive feedback loop in the emission mechanism.}
+\label{fig:feedback}
+\end{figure}
+
+The cycle operates as follows:
+\begin{enumerate}
+  \item The miner chooses \texttt{tx.gasprice} (via priority fee);
+  \item Each transaction updates the SMMA toward the chosen gas price;
+  \item The SMMA determines emission rate: higher SMMA $\rightarrow$ more XRT per gas unit;
+  \item Minted XRT can be sold on secondary markets for ETH;
+  \item Revenue from sales determines whether the operation is profitable;
+  \item Profitability assessment informs the miner's choice of gas price for the next round.
+\end{enumerate}
+
+This creates a natural equilibrium: miners will bid gas prices up only to the point where the additional emission revenue covers the additional gas cost.
+
+\subsubsection{Formal Equilibrium Model}
+
+We can formalize the equilibrium condition. Let $p$ denote the priority fee in gwei, $b$ the base fee, and $P_{\mathrm{xrt}}$ the market price of XRT in ETH. At steady state, the SMMA converges to the effective gas price $g_{\mathrm{eff}} = b + p$. The revenue per round (10 liabilities, 20 contract calls) is:
+\begin{equation}
+  R(p) = 10 \times G_{\mathrm{lib}} \times g_{\mathrm{eff}} \times \frac{10^{9}}{F_{\mathrm{auction}}} \times \frac{P_{\mathrm{xrt}}}{10^{9}}
+  \label{eq:revenue}
+\end{equation}
+where $G_{\mathrm{lib}} = 1{,}058{,}000$ gas per liability and $F_{\mathrm{auction}} = 5.66 \times 10^{12}$ is the auction \texttt{finalPrice}. The cost per round is:
+\begin{equation}
+  C(p) = 20 \times G_{\mathrm{lib}} \times g_{\mathrm{eff}} \times 10^{-9} \;\mathrm{ETH}
+  \label{eq:cost}
+\end{equation}
+
+The equilibrium priority fee $p^{*}$ satisfies $R(p^{*}) = C(p^{*})$, yielding the breakeven condition that depends on the ratio $P_{\mathrm{xrt}} / F_{\mathrm{auction}}$. Figure~\ref{fig:economic} illustrates this equilibrium graphically.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/fig8_economic_model.png}
+\caption{Economic equilibrium model: revenue vs.\ cost as a function of priority fee.}
+\label{fig:economic}
+\end{figure}
+
+The key insight is that the equilibrium is \textbf{self-limiting}: increasing the priority fee raises both revenue (via higher SMMA $\rightarrow$ more XRT) and cost (via higher gas expenditure). At our observed XRT price of ${\sim}32$~$\mu$ETH, the model predicts that the ``Pump \& Mine'' strategy is only profitable in the transient regime where SMMA exceeds the steady-state value---precisely what we observed empirically.
+
+\subsection{Properties of the Period-1000 SMMA}
+
+Our empirical data validates the following theoretical properties:
+
+\textbf{Convergence rate.} The SMMA half-life is $\frac{\ln 2 \times P}{N} = \frac{693}{20} \approx 35$ rounds, where $P = 1000$ is the smoothing period and $N = 20$ is calls per round. We observed a decline from 1.94 to ${\sim}1.41$~gwei over 69 rounds, consistent with ${\sim}50\%$ convergence toward the target (1.2~gwei).
+
+\textbf{Manipulation cost.} Increasing SMMA from 1.03 to 4.0~gwei required 448 calls at 10.2~gwei effective price, costing 2.27~ETH. The cost function for a shift $\Delta S$ from current SMMA to target $T$ over $n$ calls is:
+\begin{equation}
+  C_{\mathrm{manip}} \approx n \times G_{\mathrm{lib}} \times T \times 10^{-9} \;\mathrm{ETH}
+  \label{eq:manipulation}
+\end{equation}
+where $n \approx P \times \ln\!\left(\frac{T - S_{0}}{\epsilon}\right)$ for convergence within tolerance $\epsilon$ of the target.
+
+\textbf{Resistance to single-block manipulation.} The SMMA can shift at most $(\mathrm{target} - \mathrm{SMMA})/1000$ per call. This provides strong protection against flash-loan-style attacks---a property that many DeFi protocols adopted only after costly exploits. Even in our pump phase, where we controlled 100\% of traffic, it took 448 calls across multiple blocks to achieve a $3.88\times$ amplification.
+
+\textbf{Asymmetric convergence dynamics.} The SMMA converges faster when pushed toward higher values (pump) than when returning to lower values (decay), because the absolute step size $(T - S)/P$ is proportional to the gap. During our pump at 10.2~gwei target from 1.03~gwei start, each call moved SMMA by ${\sim}9.2/1000 = 0.0092$~gwei. During mine phase decay toward 1.2~gwei from 1.94~gwei, each call moved only ${\sim}0.74/1000 = 0.00074$~gwei. This $12\times$ difference means the SMMA retains a ``memory'' of high-gas-price periods much longer than the duration of those periods.
+
+\subsection{The Changing Gas Landscape}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/fig7_gas_landscape.png}
+\caption{Ethereum gas price evolution from design era (2018) to experiment (2026).}
+\label{fig:gas}
+\end{figure}
+
+The most significant contextual factor is the ${\sim}100\times$ decrease in Ethereum gas prices between the design era (2018) and our experiment (2026):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccp{5cm}}
+\toprule
+Era & Typical gas & Cost per liability & Emission context \\
+\midrule
+2018 (design) & 20 gwei & ${\sim}\$42$ & Mining economically unfeasible without real demand \\
+2020 (DeFi summer) & 80 gwei & ${\sim}\$169$ & Extremely expensive; only real use cases viable \\
+2022 (post-Merge) & 30 gwei & ${\sim}\$63$ & Still cost-prohibitive for empty liabilities \\
+2024 (post-Dencun) & 15 gwei & ${\sim}\$32$ & Approaching marginal viability \\
+\textbf{2026 (experiment)} & \textbf{0.25 gwei} & $\mathbf{{\sim}\$0.53}$ & \textbf{Empty liability mining becomes feasible} \\
+\bottomrule
+\end{tabular}
+\caption{Evolution of Ethereum gas costs and implications for emission mining.}
+\label{tab:gas_landscape}
+\end{table}
+
+\subsection{Design Lessons}
+
+We frame our observations not as flaws but as insights into the challenges of long-lived mechanism design:
+
+\textbf{Lesson~1: Environmental assumptions are the most fragile invariant.} The Robonomics architects correctly identified gas cost as the fundamental unit of account for network operations. What changed was the external environment---gas prices decreased $100\times$---not any internal property of the mechanism.
+
+\textbf{Lesson~2: Endogenous oracles have bounded domains of applicability.} The SMMA works excellently when \texttt{tx.gasprice} reflects genuine market conditions, as it did in the 2018 gas regime. However, like all oracle designs, it has a domain of applicability bounded by the assumptions about participant behavior.
+
+\textbf{Lesson~3: The smoothing period encodes a temporal security assumption.} The choice of $P = 1000$ for the SMMA period implicitly assumes that legitimate traffic dominates over manipulation attempts on the timescale of ${\sim}1000$ observations.
+
+\textbf{Lesson~4: Immutable contracts are time capsules of their design era.} The Robonomics v5 contracts on Ethereum mainnet are a faithful encoding of the economic thinking circa 2018. Their continued operation in 2026---still correctly minting tokens, managing lighthouses, and processing liabilities---is a testament to the quality of the implementation.
+
+\section{The Art of Early Ethereum Mechanism Design}
+
+\subsection{Historical Context}
+
+The Robonomics whitepaper was published on May~12, 2018, during a period of extraordinary creativity in smart contract architecture. The authors---Lonshakov and Krupenkin as lead architects, along with Radchenko, Kapitonov, Khassanov, and Starostin---drew on a remarkable intellectual synthesis: Wiener's cybernetics, Coase's economics, ROS robotics, and Ethereum's programmable state machine.
+
+Several design decisions deserve particular recognition:
+
+\subsection{The Lightweight Contract Pattern}
+
+The Factory uses \texttt{DELEGATECALL} to create liability contracts that share implementation code but maintain separate state. This pattern, which saved 30--40\% gas per contract creation, predated the widespread adoption of minimal proxy contracts (EIP-1167, 2018) and demonstrates that the Robonomics team was at the frontier of gas optimization.
+
+\subsection{Deferred Signature Architecture}
+
+Rather than requiring both parties to submit on-chain transactions, Robonomics uses deferred signatures---off-chain signed messages that a provider submits on behalf of both parties. This meta-transaction pattern anticipated EIP-2612 (permit) and EIP-4337 (account abstraction) by several years.
+
+\subsection{The Gas-as-Unit-of-Account Principle}
+
+The whitepaper's principle \emph{``Emission of 1~Wn = 1~gas utilized by Robonomics''} is a conceptual breakthrough. It recognizes that in the EVM, gas is the fundamental measure of computational work---and therefore the natural unit of account for a protocol that monetizes computational work by robots.
+
+\subsection{The Denomination System}
+
+The XRT denomination system---wiener ($1$), coase ($10^{3}$), glushkov ($10^{6}$), robonomics token ($10^{9}$)---pays homage to the intellectual lineage: Norbert Wiener (cybernetics), Ronald Coase (transaction cost economics), and Viktor Glushkov (Soviet cybernetics pioneer). This is more than nomenclature; it encodes the interdisciplinary philosophy of the project.
+
+\section{Conclusion}
+
+We have presented an empirical study of the Robonomics XRT emission mechanism, conducting a controlled experiment on Ethereum mainnet that generated 24,190 XRT tokens through 1,360 liability contracts. The experiment demonstrates that the SMMA-based emission formula continues to function as mathematically specified eight years after deployment, while the economic equilibrium has shifted due to the ${\sim}100\times$ decrease in Ethereum gas prices.
+
+The ``Pump \& Mine'' strategy---artificially inflating the SMMA through high-priority transactions, then mining at lower cost---proved technically successful but economically constrained by secondary market dynamics. The thin liquidity of the XRT/ETH pool on Uniswap~V2 imposed a natural limit on extraction, with each sell event degrading the price by approximately 1\%.
+
+Our key finding is that the Robonomics emission mechanism represents a sophisticated piece of early Ethereum mechanism design that correctly implements its stated economic principles. The system's behavior under 2026 conditions is not a malfunction but a faithful execution of invariants designed for a different gas regime. This distinction is important for the broader field of mechanism design: \textbf{a mechanism that correctly tracks its specified parameters is well-designed, even when external conditions shift its equilibrium point}.
+
+The Robonomics architecture---with its Factory pattern, lighthouse coordination, deferred signatures, and gas-proportional emission---stands as a monument to the creativity and ambition of early Ethereum builders. Studying these systems years later provides invaluable insights into the art and science of encoding economic behavior in immutable code.
+
+\section*{Acknowledgements}
+
+The authors thank Claude (Anthropic) for AI-assisted research, data analysis, and manuscript preparation. The \texttt{xrt-classic-miner} tool was co-developed with Claude's assistance.
+
+\bibliography{references}
+
+\appendix
+
+\section{Observed Gas Parameters}
+\label{app:gas}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Operation & Gas (observed) & $\sigma$ \\
+\midrule
+\texttt{createLiability} & 789,000 & $\pm 5{,}000$ \\
+\texttt{finalizeLiability} & 267,000 & $\pm 1{,}000$ \\
+\texttt{swapExactTokensForETH} & 112,000 & $\pm 3{,}000$ \\
+Per liability (create + finalize) & 1,058,000 & --- \\
+Per round (10 create + 10 finalize) & 10,564,000 & --- \\
+\bottomrule
+\end{tabular}
+\caption{Observed gas consumption for key operations.}
+\label{tab:gas_params}
+\end{table}
+
+\section{Smart Contract Addresses}
+\label{app:addresses}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Contract & Address \\
+\midrule
+Factory & \texttt{0x7e384AD1FE06747594a6102EE5b377b273DC1225} \\
+XRT (ERC-20) & \texttt{0x7dE91B204C1C737bcEe6F000AAA6569Cf7061cb7} \\
+Lighthouse (experiment) & \texttt{0x04C672af1e54d6C9Bd3f153d590f5681d8EcbbeE} \\
+Auction & \texttt{0x86da63b3341924c88baa5adbb2b8f930cc02e586} \\
+Uniswap V2 Router & \texttt{0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D} \\
+Chainlink ETH/USD & \texttt{0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419} \\
+\bottomrule
+\end{tabular}
+\caption{Smart contract addresses used in the experiment.}
+\label{tab:addresses}
+\end{table}
+
+\section{Experiment Timeline}
+\label{app:timeline}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llp{4cm}}
+\toprule
+Timestamp & Event & Key metric \\
+\midrule
+T+0 min & Pump launched (batch=56, prio=10 gwei) & SMMA = 1.03 gwei \\
+T+15 min & Pump complete (4 rounds, budget exhausted) & SMMA $\approx$ 4.0 gwei \\
+T+20 min & Cleanup: finalize remaining, sell 16,899 XRT & 0.763 ETH received \\
+T+25 min & Mine attempt \#1 (batch=56, prio=1 gwei) & TX timeouts round 13 \\
+T+45 min & Mine attempt \#2 (batch=56, prio=2 gwei) & TX timeout round 1 \\
+T+55 min & Mine attempt \#3 (batch=20, prio=2 gwei) & TX timeout round 1 \\
+T+60 min & Mine attempt \#4 (batch=10, prio=1 gwei) & Stable --- 0 errors \\
+T+135 min & 69 rounds complete, mining unprofitable & SMMA = 1.41 gwei \\
+T+140 min & Experiment terminated & Net: $-0.342$ ETH \\
+\bottomrule
+\end{tabular}
+\caption{Experiment timeline.}
+\label{tab:timeline}
+\end{table}
+
+\section{Source Code}
+\label{app:source}
+
+The complete source code for \texttt{xrt-classic-miner} is available at:
+
+\url{https://github.com/ensrationis/xrt-classic-miner}
+
+\noindent Key files:
+\begin{itemize}
+  \item \texttt{xrt\_miner/miner.py} --- Core mining logic (XRTMiner class, 620 lines)
+  \item \texttt{xrt\_miner/signer.py} --- Demand/offer/result encoding (183 lines)
+  \item \texttt{xrt\_miner/abi.py} --- Contract interfaces and addresses
+  \item \texttt{xrt\_miner/\_\_main\_\_.py} --- CLI entry point
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,17 @@
+.venv/
+*.egg-info/
+__pycache__/
+*.pyc
+config.yaml
+.claude/
+claude-memory-export.md
+paper/arxiv/*.aux
+paper/arxiv/*.bbl
+paper/arxiv/*.blg
+paper/arxiv/*.log
+paper/arxiv/*.out
+paper/arxiv/*.pdf
+paper/arxiv-submission.tar.gz
+.env
+*.key
+*.pem

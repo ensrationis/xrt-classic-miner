@@ -1,0 +1,13 @@
+[project]
+name = "xrt-classic-miner"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "web3>=7.0",
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "eth-account>=0.13",
+]
+
+[project.scripts]
+xrt-miner = "xrt_miner.__main__:cli"
