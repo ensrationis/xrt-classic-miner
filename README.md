@@ -131,3 +131,10 @@ When the SMMA is much higher than the actual network gas price, each liability c
 - [Paper: XRT Emission as Proof-of-Work Mining](paper/xrt_emission_experiment.pdf)
 - [Robonomics Network](https://robonomics.network/)
 - [XRT on Etherscan](https://etherscan.io/token/0x7dE91B204C1c737bcEe6F000AAA6569Cf7061cb7)
+
+## License
+
+Code in this repository is [MIT](LICENSE) © 2026 Sergei Lonshakov.
+
+The paper and its figures under [`paper/`](paper/) are licensed separately under
+[CC BY 4.0](paper/LICENSE) — reuse and translation are welcome with attribution.
